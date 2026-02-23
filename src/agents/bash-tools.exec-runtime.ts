@@ -10,6 +10,7 @@ import type { ProcessSession } from "./bash-process-registry.js";
 import type { ExecToolDetails } from "./bash-tools.exec-types.js";
 import type { BashSandboxConfig } from "./bash-tools.shared.js";
 export { applyPathPrepend, normalizePathPrepend } from "../infra/path-prepend.js";
+import { loadConfig } from "../config/config.js";
 import { logWarn } from "../logger.js";
 import type { ManagedRun } from "../process/supervisor/index.js";
 import { getProcessSupervisor } from "../process/supervisor/index.js";
@@ -26,6 +27,11 @@ import {
   clampWithDefault,
   readEnvInt,
 } from "./bash-tools.shared.js";
+import {
+  transformCliCommandForOllama,
+  shouldTransformForOllama,
+  resolveOllamaProvider,
+} from "./cli-backend-ollama.js";
 import { buildCursorPositionResponse, stripDsrRequests } from "./pty-dsr.js";
 import { getShellConfig, sanitizeBinaryOutput } from "./shell-utils.js";
 
@@ -272,7 +278,33 @@ export async function runExecProcess(opts: {
 }): Promise<ExecProcessHandle> {
   const startedAt = Date.now();
   const sessionId = createSessionSlug();
-  const execCommand = opts.execCommand ?? opts.command;
+  let execCommand = opts.execCommand ?? opts.command;
+  let transformedEnv = { ...opts.env };
+
+  // Ollama CLI backend transformation
+  if (!opts.sandbox && opts.sessionKey) {
+    const cfg = loadConfig();
+    const subagentModelRaw = cfg.agents?.defaults?.subagents?.model;
+    // Normalize model selection - could be string or { primary: string }
+    const subagentModel =
+      typeof subagentModelRaw === "string"
+        ? subagentModelRaw
+        : (subagentModelRaw as { primary?: string } | undefined)?.primary;
+
+    if (subagentModel && shouldTransformForOllama(execCommand, subagentModel)) {
+      const ollamaProvider = resolveOllamaProvider(cfg);
+      const transformed = transformCliCommandForOllama(execCommand, subagentModel, ollamaProvider);
+
+      if (transformed.transformed) {
+        execCommand = transformed.command;
+        transformedEnv = { ...transformedEnv, ...transformed.env };
+        opts.warnings.push(
+          `Note: Using Ollama model ${subagentModel.split("/")[1]} for coding agent`,
+        );
+      }
+    }
+  }
+
   const supervisor = getProcessSupervisor();
 
   const session: ProcessSession = {
@@ -368,7 +400,7 @@ export async function runExecProcess(opts: {
             containerName: opts.sandbox.containerName,
             command: execCommand,
             workdir: opts.containerWorkdir ?? opts.sandbox.containerWorkdir,
-            env: opts.env,
+            env: transformedEnv,
             tty: opts.usePty,
           }),
         ],
@@ -383,14 +415,14 @@ export async function runExecProcess(opts: {
         mode: "pty" as const,
         ptyCommand: execCommand,
         childFallbackArgv: childArgv,
-        env: opts.env,
+        env: transformedEnv,
         stdinMode: "pipe-open" as const,
       };
     }
     return {
       mode: "child" as const,
       argv: childArgv,
-      env: opts.env,
+      env: transformedEnv,
       stdinMode: "pipe-closed" as const,
     };
   })();
