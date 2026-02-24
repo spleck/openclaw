@@ -201,6 +201,20 @@ describe("isContextOverflowError", () => {
     }
   });
 
+  it("matches Chinese context overflow error messages from proxy providers", () => {
+    const samples = [
+      "上下文过长",
+      "错误：上下文过长，请减少输入",
+      "上下文超出限制",
+      "上下文长度超出模型最大限制",
+      "超出最大上下文长度",
+      "请压缩上下文后重试",
+    ];
+    for (const sample of samples) {
+      expect(isContextOverflowError(sample)).toBe(true);
+    }
+  });
+
   it("ignores normal conversation text mentioning context overflow", () => {
     // These are legitimate conversation snippets, not error messages
     expect(isContextOverflowError("Let's investigate the context overflow bug")).toBe(false);
@@ -379,6 +393,10 @@ describe("classifyFailoverReason", () => {
     expect(classifyFailoverReason("invalid api key")).toBe("auth");
     expect(classifyFailoverReason("no credentials found")).toBe("auth");
     expect(classifyFailoverReason("no api key found")).toBe("auth");
+    expect(classifyFailoverReason("You have insufficient permissions for this operation.")).toBe(
+      "auth",
+    );
+    expect(classifyFailoverReason("Missing scopes: model.request")).toBe("auth");
     expect(classifyFailoverReason("429 too many requests")).toBe("rate_limit");
     expect(classifyFailoverReason("resource has been exhausted")).toBe("rate_limit");
     expect(
